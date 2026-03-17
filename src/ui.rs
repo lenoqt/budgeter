@@ -13,6 +13,28 @@ use ratatui::{
 use crate::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, LoanField, OtherField, PersonalField, Popup, Tab};
 use crate::model::IncomeScenario;
 
+/// Truncate a string to at most `max_chars` Unicode scalar values, appending "…" if truncated.
+/// This is safe for strings containing multi-byte characters (e.g. Japanese).
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let mut out = String::with_capacity(max_chars + 3);
+    let mut count = 0;
+    loop {
+        match chars.next() {
+            None => break,
+            Some(c) => {
+                count += 1;
+                if count > max_chars {
+                    out.push('…');
+                    break;
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// Get the display string for a cell — returns the edit buffer when actively editing that cell.
 fn cell_display(app: &App, row_idx: usize, is_active_col: bool, raw: String) -> String {
     if row_idx == app.selected_row && is_active_col && app.edit_mode == EditMode::Editing {
@@ -996,11 +1018,7 @@ fn draw_spending_drill(frame: &mut Frame, app: &App, area: Rect) {
             let sel_st = Style::default().fg(C_SELECT_FG).bg(row_bg);
 
             // Truncate merchant to fit
-            let merchant = if tx.merchant.len() > 28 {
-                format!("{}…", &tx.merchant[..27])
-            } else {
-                tx.merchant.clone()
-            };
+            let merchant = truncate_chars(&tx.merchant, 28);
 
             Row::new(vec![
                 Cell::from(if sel { "> ".to_string() } else { "  ".to_string() }).style(sel_st),
@@ -1178,11 +1196,7 @@ fn draw_import_preview(frame: &mut Frame, app: &App, area: Rect) {
             let amt_st  = Style::default().fg(C_TOTAL_FG).bg(row_bg);
             let sel_st  = Style::default().fg(C_SELECT_FG).bg(row_bg);
 
-            let merchant = if tx.merchant.len() > 26 {
-                format!("{}…", &tx.merchant[..25])
-            } else {
-                tx.merchant.clone()
-            };
+            let merchant = truncate_chars(&tx.merchant, 26);
             let cat_text = if tx.category.is_empty() {
                 "(unset — Enter to assign)".to_string()
             } else {
@@ -1245,11 +1259,7 @@ fn draw_popup_category_picker(frame: &mut Frame, app: &App, area: Rect, row: usi
         .unwrap_or("(unknown)");
 
     // Truncate merchant for title
-    let merchant_short = if merchant.len() > 30 {
-        format!("{}…", &merchant[..29])
-    } else {
-        merchant.to_string()
-    };
+    let merchant_short = truncate_chars(merchant, 30);
 
     let title = Span::styled(
         format!(" Assign Category: {} ", merchant_short),
