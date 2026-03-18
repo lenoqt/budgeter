@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use polars::prelude::*;
 
 use crate::model::{
-    Budget, FamilyExpenseItem, FamilyExpenses, Income, IncomeMember, Loan, Loans, OtherItem,
-    OtherItems, PersonalExpenseItem, PersonalExpenses, SpendingLog, SpendingCategory, Transaction,
+    Budget, CarLoan, Debt, FamilyExpenseItem, FamilyExpenses, Income, IncomeMember, Loans,
+    Mortgage, OtherItem, OtherItems, PersonalExpenseItem, PersonalExpenses, SpendingCategory,
+    SpendingLog, Transaction,
 };
 
 pub struct Db {
@@ -91,8 +92,9 @@ fn budgets_to_df(budgets: &[Budget]) -> Result<DataFrame> {
     let mut inc_b_after:   Vec<i64>    = Vec::new();
     let mut inc_b_early:   Vec<i64>    = Vec::new();
     let mut inc_b_late:    Vec<i64>    = Vec::new();
-    let mut loan_frac:     Vec<f64>    = Vec::new();
-    let mut loan_json:     Vec<String> = Vec::new();
+    let mut mortgage_json: Vec<String> = Vec::new();
+    let mut car_json:      Vec<String> = Vec::new();
+    let mut debts_json:    Vec<String> = Vec::new();
     let mut personal_json: Vec<String> = Vec::new();
     let mut family_json:   Vec<String> = Vec::new();
     let mut other_json:    Vec<String> = Vec::new();
@@ -114,14 +116,13 @@ fn budgets_to_df(budgets: &[Budget]) -> Result<DataFrame> {
         inc_b_after.push(g.income_after_tax);
         inc_b_early.push(g.parental_leave_early);
         inc_b_late.push(g.parental_leave_late);
-        loan_frac.push(b.loans.income_fraction);
-        loan_json.push(serde_json::to_string(&b.loans.loans).unwrap_or_default());
+        mortgage_json.push(serde_json::to_string(&b.loans.mortgage).unwrap_or_default());
+        car_json.push(serde_json::to_string(&b.loans.car).unwrap_or_default());
+        debts_json.push(serde_json::to_string(&b.loans.debts).unwrap_or_default());
         personal_json.push(serde_json::to_string(&b.personal_expenses.items).unwrap_or_default());
         family_json.push(serde_json::to_string(&b.family_expenses.items).unwrap_or_default());
         other_json.push(serde_json::to_string(&b.other_items.items).unwrap_or_default());
 
-        // Spending log: serialise as a helper struct so both transactions and
-        // category caps are persisted together.
         let spending_blob = SpendingBlob {
             transactions: b.spending.transactions.clone(),
             categories:   b.spending.categories.clone(),
@@ -138,8 +139,9 @@ fn budgets_to_df(budgets: &[Budget]) -> Result<DataFrame> {
         Column::new("inc_b_after".into(),   inc_b_after),
         Column::new("inc_b_early".into(),   inc_b_early),
         Column::new("inc_b_late".into(),    inc_b_late),
-        Column::new("loan_frac".into(),     loan_frac),
-        Column::new("loan_json".into(),     loan_json),
+        Column::new("mortgage_json".into(), mortgage_json),
+        Column::new("car_json".into(),      car_json),
+        Column::new("debts_json".into(),    debts_json),
         Column::new("personal_json".into(), personal_json),
         Column::new("family_json".into(),   family_json),
         Column::new("other_json".into(),    other_json),
@@ -161,22 +163,27 @@ fn rows_to_budgets(df: &DataFrame) -> Result<Vec<Budget>> {
     let b_after_tax   = i64_col(df, "inc_b_after")?;
     let b_pl_early    = i64_col(df, "inc_b_early")?;
     let b_pl_late     = i64_col(df, "inc_b_late")?;
-    let loan_fracs    = f64_col(df, "loan_frac")?;
-    let loan_jsn      = str_col(df, "loan_json")?;
     let personal_jsn  = str_col(df, "personal_json")?;
     let family_jsn    = str_col(df, "family_json")?;
     let other_jsn     = str_col(df, "other_json")?;
 
-    // spending_json is optional for backwards compatibility with older Parquet files
-    // that were saved before this column was added.
-    let spending_jsn: Vec<Option<&str>> = if df.get_column_names()
-        .iter()
-        .any(|c| c.as_str() == "spending_json")
-    {
-        str_col(df, "spending_json")?
-    } else {
-        vec![None; n]
-    };
+    let col_names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+
+    // Helper: return a str column if present, otherwise a vec of None (backwards compat).
+    macro_rules! optional_str_col {
+        ($name:expr) => {
+            if col_names.contains(&$name) {
+                str_col(df, $name)?
+            } else {
+                vec![None; n]
+            }
+        };
+    }
+
+    let mortgage_jsn  = optional_str_col!("mortgage_json");
+    let car_jsn       = optional_str_col!("car_json");
+    let debts_jsn     = optional_str_col!("debts_json");
+    let spending_jsn  = optional_str_col!("spending_json");
 
     let mut out = Vec::with_capacity(n);
 
@@ -197,10 +204,6 @@ fn rows_to_budgets(df: &DataFrame) -> Result<Vec<Budget>> {
             ],
         };
 
-        let loans_vec: Vec<Loan> = loan_jsn[i]
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
-
         let personal_items: Vec<PersonalExpenseItem> = personal_jsn[i]
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
@@ -210,6 +213,18 @@ fn rows_to_budgets(df: &DataFrame) -> Result<Vec<Budget>> {
             .unwrap_or_default();
 
         let other_items: Vec<OtherItem> = other_jsn[i]
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
+        let mortgage: Mortgage = mortgage_jsn[i]
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
+        let car: CarLoan = car_jsn[i]
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
+        let debts: Vec<Debt> = debts_jsn[i]
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
 
@@ -224,10 +239,7 @@ fn rows_to_budgets(df: &DataFrame) -> Result<Vec<Budget>> {
         out.push(Budget {
             month,
             income,
-            loans: Loans {
-                income_fraction: loan_fracs[i],
-                loans: loans_vec,
-            },
+            loans: Loans { mortgage, car, debts },
             personal_expenses: PersonalExpenses { items: personal_items },
             family_expenses:   FamilyExpenses   { items: family_items   },
             other_items:       OtherItems        { items: other_items    },
@@ -268,16 +280,5 @@ fn i64_col(df: &DataFrame, name: &str) -> Result<Vec<i64>> {
         .with_context(|| format!("Column '{name}' is not Int64"))?
         .into_iter()
         .map(|v| v.unwrap_or(0))
-        .collect())
-}
-
-fn f64_col(df: &DataFrame, name: &str) -> Result<Vec<f64>> {
-    Ok(df
-        .column(name)
-        .with_context(|| format!("Column '{name}' is not Float64"))?
-        .f64()
-        .with_context(|| format!("Column '{name}' is not Float64"))?
-        .into_iter()
-        .map(|v| v.unwrap_or(0.0))
         .collect())
 }

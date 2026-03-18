@@ -10,7 +10,7 @@ use ratatui::{
     },
 };
 
-use crate::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, LoanField, OtherField, PersonalField, Popup, Tab};
+use crate::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, OtherField, PersonalField, Popup, Tab};
 use crate::model::IncomeScenario;
 
 /// Truncate a string to at most `max_chars` Unicode scalar values, appending "…" if truncated.
@@ -305,13 +305,7 @@ fn is_col(app: &App, tab: Tab, col_idx: usize) -> bool {
             };
             idx == col_idx
         }
-        Tab::Loans => {
-            let idx = match app.loan_field {
-                LoanField::Label    => 0,
-                LoanField::Fraction => 1,
-            };
-            idx == col_idx
-        }
+        Tab::Loans => false, // loans uses row-based navigation per subsection
         Tab::PersonalExpenses => {
             let idx = match app.personal_field {
                 PersonalField::Label   => 0,
@@ -346,94 +340,359 @@ fn is_col(app: &App, tab: Tab, col_idx: usize) -> bool {
 // ── Loans tab ────────────────────────────────────────────────────────────────
 
 fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(2)])
-        .split(area);
+    use crate::app::{LoanSection, DebtField};
 
     let income_total = app.budget.effective_income_total(app.scenario);
     let loan_total   = app.budget.loan_total(app.scenario);
     let balance      = app.budget.balance_after_loans(app.scenario);
 
-    let header = header_row(&["Loan / Setting", "Value / %", "Monthly JPY"]);
+    // Root layout: summary bar | three panels side-by-side | hint bar
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // summary
+            Constraint::Min(0),    // panels
+            Constraint::Length(1), // hint
+        ])
+        .split(area);
 
-    let mut rows: Vec<Row> = Vec::new();
-
-    // Row 0 — income fraction
-    {
-        let r    = 0usize;
-        let col0 = is_col(app, Tab::Loans, 0);
-        let col1 = is_col(app, Tab::Loans, 1);
-        let label_s = cell_display(app, r, col0, "% of monthly income".to_string());
-        let frac_s  = cell_display(app, r, col1, pct(app.budget.loans.income_fraction));
-        rows.push(Row::new(vec![
-            Cell::from(label_s).style(cell_style(app, r, col0)),
-            Cell::from(frac_s).style(cell_style(app, r, col1)),
-            Cell::from(jpy(loan_total)).style(Style::default().fg(C_TOTAL_FG).add_modifier(Modifier::BOLD)),
-        ]));
-    }
-
-    // Individual loan rows (r starts at 1)
-    for (i, loan) in app.budget.loans.loans.iter().enumerate() {
-        let r    = i + 1;
-        let col0 = is_col(app, Tab::Loans, 0);
-        let col1 = is_col(app, Tab::Loans, 1);
-        let label_s   = cell_display(app, r, col0, loan.label.clone());
-        let frac_s    = cell_display(app, r, col1, pct(loan.fraction));
-        let monthly   = jpy(app.budget.loans.payment_for(loan, income_total));
-        rows.push(Row::new(vec![
-            Cell::from(label_s).style(cell_style(app, r, col0)),
-            Cell::from(frac_s).style(cell_style(app, r, col1)),
-            Cell::from(monthly).style(Style::default().fg(C_DIM)),
-        ]));
-    }
-
-    // Totals
-    let ts = Style::default().fg(C_TOTAL_FG).add_modifier(Modifier::BOLD);
-    let bs = Style::default().fg(balance_color(balance)).add_modifier(Modifier::BOLD);
-    rows.push(Row::new(vec![
-        Cell::from("Total income").style(ts),
-        Cell::from("").style(ts),
-        Cell::from(jpy(income_total)).style(ts),
-    ]));
-    rows.push(Row::new(vec![
-        Cell::from("Total loan payment").style(ts),
-        Cell::from(""),
-        Cell::from(jpy(loan_total)).style(ts),
-    ]));
-    rows.push(Row::new(vec![
-        Cell::from("Balance after loans").style(bs),
-        Cell::from(""),
-        Cell::from(jpy(balance)).style(bs),
-    ]));
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(40),
-            Constraint::Percentage(20),
-            Constraint::Percentage(40),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(C_BORDER))
-            .title(Span::styled(" Loans ", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD))),
-    );
-
-    let mut state = TableState::default().with_selected(Some(app.selected_row));
-    frame.render_stateful_widget(table, chunks[0], &mut state);
+    // ── Summary bar ───────────────────────────────────────────────────────────
+    let sum_line = Line::from(vec![
+        Span::styled("  Income: ", Style::default().fg(C_DIM)),
+        Span::styled(jpy(income_total), Style::default().fg(C_TOTAL_FG).add_modifier(Modifier::BOLD)),
+        Span::styled("   Total loan payment: ", Style::default().fg(C_DIM)),
+        Span::styled(jpy(loan_total), Style::default().fg(C_BALANCE_NEG).add_modifier(Modifier::BOLD)),
+        Span::styled("   Balance after loans: ", Style::default().fg(C_DIM)),
+        Span::styled(jpy(balance), Style::default().fg(balance_color(balance)).add_modifier(Modifier::BOLD)),
+    ]);
     frame.render_widget(
-        Paragraph::new(hint_line(&[
-            ("←→", "move col"),
-            ("↑↓", "move row"),
-            ("Enter", "edit"),
-            ("s", "cycle scenario"),
-        ])),
-        chunks[1],
+        Paragraph::new(sum_line).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(C_BORDER))
+                .title(Span::styled(" Loans Summary ", Style::default().fg(C_TAB_SEL).add_modifier(Modifier::BOLD))),
+        ),
+        root[0],
     );
+
+    // ── Three subsection panels ───────────────────────────────────────────────
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+            Constraint::Percentage(34),
+        ])
+        .split(root[1]);
+
+    // Helper: border colour depending on whether this section is active.
+    let section_border = |sec: LoanSection| {
+        if app.loan_section == sec { C_ACCENT } else { C_BORDER }
+    };
+    let section_title_style = |sec: LoanSection| {
+        if app.loan_section == sec {
+            Style::default().fg(C_TAB_SEL).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(C_DIM)
+        }
+    };
+
+    // ── Mortgage panel ────────────────────────────────────────────────────────
+    {
+        use crate::app::MortgageField;
+        let m = &app.budget.loans.mortgage;
+        let active = app.loan_section == LoanSection::Mortgage;
+
+        // Each row is either an editable input or a computed read-only display.
+        enum MRow {
+            Input(MortgageField, &'static str, String),
+            Computed(&'static str, String),
+            Separator,
+        }
+
+        let rows_def: Vec<MRow> = vec![
+            MRow::Input(MortgageField::Principal,    "Outstanding principal",     jpy(m.principal)),
+            MRow::Input(MortgageField::InterestRate, "Annual rate % (年利)",      format!("{:.4}%", m.interest_rate * 100.0)),
+            MRow::Input(MortgageField::RemainingMonths, "Remaining months",       format!("{} mo", m.remaining_months)),
+            MRow::Input(MortgageField::Amortization, "Method (Enter to toggle)",  m.amortization.label().to_string()),
+            MRow::Separator,
+            MRow::Computed("  ↳ Monthly principal (元金)",  jpy(m.monthly_principal)),
+            MRow::Computed("  ↳ Monthly interest  (利息)",  jpy(m.monthly_interest)),
+            MRow::Input(MortgageField::MonthlyInsurance, "  + Insurance/fee (保証料)", jpy(m.monthly_insurance)),
+            MRow::Separator,
+            MRow::Computed("  = Monthly total",            jpy(m.monthly_total)),
+        ];
+
+        // Build the TableState selection index — only Input rows are selectable.
+        let input_positions: Vec<usize> = rows_def.iter().enumerate()
+            .filter_map(|(i, r)| if matches!(r, MRow::Input(..)) { Some(i) } else { None })
+            .collect();
+        let active_field_row = if active {
+            MortgageField::ALL.iter().position(|f| *f == app.mortgage_field)
+                .and_then(|fi| input_positions.get(fi).copied())
+        } else {
+            None
+        };
+
+        let rows: Vec<Row> = rows_def.iter().map(|row_def| {
+            match row_def {
+                MRow::Input(field, label, val) => {
+                    let is_sel = active && app.mortgage_field == *field;
+                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let display = if editing { app.edit_buf.clone() } else { val.clone() };
+                    let is_toggle = matches!(field, MortgageField::Amortization);
+                    let lbl_style = if is_sel {
+                        Style::default().fg(C_SELECT_FG).bg(C_SELECT_BG).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let val_style = if editing {
+                        Style::default().fg(C_EDIT_FG).bg(C_EDIT_BG).add_modifier(Modifier::BOLD)
+                    } else if is_sel && is_toggle {
+                        Style::default().fg(C_TAB_SEL).bg(C_SELECT_BG).add_modifier(Modifier::BOLD)
+                    } else if is_sel {
+                        Style::default().fg(C_SELECT_FG).bg(C_SELECT_BG).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    } else if is_toggle {
+                        Style::default().fg(C_TAB_SEL)
+                    } else {
+                        Style::default().fg(C_ACCENT)
+                    };
+                    Row::new(vec![
+                        Cell::from(label.to_string()).style(lbl_style),
+                        Cell::from(display).style(val_style),
+                    ])
+                }
+                MRow::Computed(label, val) => {
+                    Row::new(vec![
+                        Cell::from(label.to_string()).style(Style::default().fg(C_DIM)),
+                        Cell::from(val.clone()).style(Style::default().fg(C_TOTAL_FG).add_modifier(Modifier::BOLD)),
+                    ])
+                }
+                MRow::Separator => {
+                    Row::new(vec![
+                        Cell::from("─────────────────────").style(Style::default().fg(Color::Rgb(50, 65, 90))),
+                        Cell::from("────────────").style(Style::default().fg(Color::Rgb(50, 65, 90))),
+                    ])
+                }
+            }
+        }).collect();
+
+        let table = Table::new(
+            rows,
+            [Constraint::Percentage(62), Constraint::Percentage(38)],
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(section_border(LoanSection::Mortgage)))
+                .title(Span::styled(
+                    format!(" 🏠 Mortgage ({}/mo) ", jpy(m.monthly_total)),
+                    section_title_style(LoanSection::Mortgage),
+                )),
+        );
+
+        let mut state = TableState::default().with_selected(active_field_row);
+        frame.render_stateful_widget(table, panels[0], &mut state);
+    }
+
+    // ── Car panel ─────────────────────────────────────────────────────────────
+    {
+        use crate::app::CarField;
+        let c = &app.budget.loans.car;
+        let active = app.loan_section == LoanSection::Car;
+
+        enum CRow {
+            Input(CarField, &'static str, String),
+            Computed(&'static str, String),
+            Separator,
+        }
+
+        let rows_def: Vec<CRow> = vec![
+            CRow::Input(CarField::Principal,      "Outstanding principal",    jpy(c.principal)),
+            CRow::Input(CarField::InterestRate,   "Annual rate % (年利)",     format!("{:.4}%", c.interest_rate * 100.0)),
+            CRow::Input(CarField::RemainingMonths,"Remaining months",         format!("{} mo", c.remaining_months)),
+            CRow::Input(CarField::Amortization,   "Method (Enter to toggle)", c.amortization.label().to_string()),
+            CRow::Separator,
+            CRow::Computed("  ↳ Monthly principal (元金)", jpy(c.monthly_principal)),
+            CRow::Computed("  ↳ Monthly interest  (利息)", jpy(c.monthly_interest)),
+            CRow::Separator,
+            CRow::Computed("  = Monthly total",            jpy(c.monthly_total)),
+        ];
+
+        let input_positions: Vec<usize> = rows_def.iter().enumerate()
+            .filter_map(|(i, r)| if matches!(r, CRow::Input(..)) { Some(i) } else { None })
+            .collect();
+        let active_field_row = if active {
+            CarField::ALL.iter().position(|f| *f == app.car_field)
+                .and_then(|fi| input_positions.get(fi).copied())
+        } else {
+            None
+        };
+
+        let rows: Vec<Row> = rows_def.iter().map(|row_def| {
+            match row_def {
+                CRow::Input(field, label, val) => {
+                    let is_sel = active && app.car_field == *field;
+                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let display = if editing { app.edit_buf.clone() } else { val.clone() };
+                    let is_toggle = matches!(field, CarField::Amortization);
+                    let lbl_style = if is_sel {
+                        Style::default().fg(C_SELECT_FG).bg(C_SELECT_BG).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let val_style = if editing {
+                        Style::default().fg(C_EDIT_FG).bg(C_EDIT_BG).add_modifier(Modifier::BOLD)
+                    } else if is_sel && is_toggle {
+                        Style::default().fg(C_TAB_SEL).bg(C_SELECT_BG).add_modifier(Modifier::BOLD)
+                    } else if is_sel {
+                        Style::default().fg(C_SELECT_FG).bg(C_SELECT_BG).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    } else if is_toggle {
+                        Style::default().fg(C_TAB_SEL)
+                    } else {
+                        Style::default().fg(C_ACCENT)
+                    };
+                    Row::new(vec![
+                        Cell::from(label.to_string()).style(lbl_style),
+                        Cell::from(display).style(val_style),
+                    ])
+                }
+                CRow::Computed(label, val) => {
+                    Row::new(vec![
+                        Cell::from(label.to_string()).style(Style::default().fg(C_DIM)),
+                        Cell::from(val.clone()).style(Style::default().fg(C_TOTAL_FG).add_modifier(Modifier::BOLD)),
+                    ])
+                }
+                CRow::Separator => {
+                    Row::new(vec![
+                        Cell::from("─────────────────────").style(Style::default().fg(Color::Rgb(50, 65, 90))),
+                        Cell::from("────────────").style(Style::default().fg(Color::Rgb(50, 65, 90))),
+                    ])
+                }
+            }
+        }).collect();
+
+        let table = Table::new(
+            rows,
+            [Constraint::Percentage(62), Constraint::Percentage(38)],
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(section_border(LoanSection::Car)))
+                .title(Span::styled(
+                    format!(" 🚗 Car Loan ({}/mo) ", jpy(c.monthly_total)),
+                    section_title_style(LoanSection::Car),
+                )),
+        );
+
+        let mut state = TableState::default().with_selected(active_field_row);
+        frame.render_stateful_widget(table, panels[1], &mut state);
+    }
+
+    // ── Debts panel ───────────────────────────────────────────────────────────
+    {
+        let debts = &app.budget.loans.debts;
+        let active = app.loan_section == LoanSection::Debts;
+        let debts_total: i64 = debts.iter().map(|d| d.monthly_payment).sum();
+
+        if debts.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "\n  No debts. Press 'a' to add one.",
+                    Style::default().fg(C_DIM),
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(section_border(LoanSection::Debts)))
+                        .title(Span::styled(
+                            " 💳 Debts (¥0) ",
+                            section_title_style(LoanSection::Debts),
+                        )),
+                ),
+                panels[2],
+            );
+        } else {
+            let col_labels = DebtField::ALL;
+            let col_names  = &["Label", "Principal", "Monthly", "Rate %", "Months"];
+
+            let rows: Vec<Row> = debts.iter().enumerate().map(|(i, d)| {
+                let is_row_sel = active && app.selected_row == i;
+
+                let vals = [
+                    d.label.clone(),
+                    jpy(d.principal),
+                    jpy(d.monthly_payment),
+                    format!("{:.4}%", d.interest_rate * 100.0),
+                    format!("{} mo", d.remaining_months),
+                ];
+
+                let cells: Vec<Cell> = col_labels.iter().zip(vals.iter()).map(|(field, val)| {
+                    let is_sel = is_row_sel && app.debt_field == *field;
+                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let display = if editing { app.edit_buf.clone() } else { val.clone() };
+                    let style = if editing {
+                        Style::default().fg(C_EDIT_FG).bg(C_EDIT_BG).add_modifier(Modifier::BOLD)
+                    } else if is_sel {
+                        Style::default().fg(C_SELECT_FG).bg(C_SELECT_BG).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    } else if is_row_sel {
+                        Style::default().fg(C_SELECT_FG).bg(Color::Rgb(35, 55, 90))
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Cell::from(display).style(style)
+                }).collect();
+
+                Row::new(cells)
+            }).collect();
+
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Min(12),
+                    Constraint::Length(12),
+                    Constraint::Length(11),
+                    Constraint::Length(8),
+                    Constraint::Length(8),
+                ],
+            )
+            .header(header_row(col_names))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(section_border(LoanSection::Debts)))
+                    .title(Span::styled(
+                        format!(" 💳 Debts ({}/mo) ", jpy(debts_total)),
+                        section_title_style(LoanSection::Debts),
+                    )),
+            );
+
+            let sel = if active { Some(app.selected_row) } else { None };
+            let mut state = TableState::default().with_selected(sel);
+            frame.render_stateful_widget(table, panels[2], &mut state);
+        }
+    }
+
+    // ── Hint bar ──────────────────────────────────────────────────────────────
+    let hint = match app.loan_section {
+        LoanSection::Debts => hint_line(&[
+            ("Tab/Shift-Tab", "switch section"),
+            ("↑↓", "select debt row"),
+            ("←→", "move column"),
+            ("Enter/e", "edit cell"),
+            ("a", "add debt"),
+            ("d", "delete debt"),
+        ]),
+        _ => hint_line(&[
+            ("Tab/Shift-Tab", "switch section"),
+            ("←→", "switch section"),
+            ("↑↓", "move field"),
+            ("Enter/e", "edit / cycle method"),
+            ("s", "cycle scenario"),
+        ]),
+    };
+    frame.render_widget(Paragraph::new(hint), root[2]);
 }
 
 // ── Personal Expenses tab ─────────────────────────────────────────────────────
@@ -800,7 +1059,15 @@ fn draw_summary(frame: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("Loan rate:  {}", pct(app.budget.loans.income_fraction)),
+            format!("Mortgage:   {}", jpy(app.budget.loans.mortgage.monthly_total)),
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            format!("Car loan:   {}", jpy(app.budget.loans.car.monthly_total)),
+            Style::default().fg(C_DIM),
+        )),
+        Line::from(Span::styled(
+            format!("Debts:      {}", jpy(app.budget.loans.debts.iter().map(|d| d.monthly_payment).sum::<i64>())),
             Style::default().fg(C_DIM),
         )),
         Line::from(Span::styled(

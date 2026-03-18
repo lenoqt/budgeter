@@ -144,25 +144,290 @@ impl Income {
 
 // ── Loans ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Loan {
-    pub label: String,
-    pub fraction: f64,
+/// Amortization method for a loan.
+///
+/// - `FixedPayment`   (元利均等返済): the total monthly payment stays constant.
+///   Interest is front-loaded; the principal portion grows over time.
+///   Formula: payment = P × r / (1 − (1+r)^−n)  where r = monthly rate, n = months.
+///
+/// - `FixedPrincipal` (元金均等返済): the principal repayment is constant each month.
+///   Interest decreases as the balance falls, so the total payment shrinks over time.
+///   This month's payment = P/n + P×r  (using current outstanding principal P).
+///
+/// - `French` (French/Français): mathematically identical to FixedPayment (constant
+///   annuity), but the label is used in many European/international contexts.
+///   Included as a distinct variant for clarity when the loan contract uses this term.
+///
+/// - `German` (German/Deutsch): identical to FixedPrincipal (constant principal
+///   repayment each period), the standard naming used in German-speaking markets and
+///   many international loan agreements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AmortizationMethod {
+    /// 元利均等返済 — constant total payment (JP standard)
+    FixedPayment,
+    /// 元金均等返済 — constant principal portion (JP standard)
+    FixedPrincipal,
+    /// French method — constant annuity (same math as FixedPayment, European label)
+    French,
+    /// German method — constant principal (same math as FixedPrincipal, European label)
+    German,
 }
 
+impl AmortizationMethod {
+    pub const ALL: &'static [AmortizationMethod] = &[
+        Self::FixedPayment,
+        Self::FixedPrincipal,
+        Self::French,
+        Self::German,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FixedPayment   => "Fixed payment   (元利均等)",
+            Self::FixedPrincipal => "Fixed principal (元金均等)",
+            Self::French         => "French method   (定額返済)",
+            Self::German         => "German method   (定額元金)",
+        }
+    }
+
+    /// Cycle to the next method in the list, wrapping around.
+    pub fn cycle(self) -> Self {
+        let i = Self::ALL.iter().position(|m| *m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// Whether this method uses constant-principal math (FixedPrincipal / German).
+    fn is_fixed_principal(self) -> bool {
+        matches!(self, Self::FixedPrincipal | Self::German)
+    }
+}
+
+impl Default for AmortizationMethod {
+    fn default() -> Self { Self::FixedPayment }
+}
+
+// ── Amortization calculation helpers ─────────────────────────────────────────
+
+/// Result of one month's amortization calculation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AmortResult {
+    pub monthly_principal: i64,
+    pub monthly_interest:  i64,
+    pub monthly_payment:   i64, // principal + interest (no insurance)
+}
+
+/// Compute this month's principal and interest split for a given loan.
+///
+/// Returns `AmortResult::default()` (all zeroes) when inputs are degenerate
+/// (zero principal, zero rate, or zero remaining months).
+pub fn amort_calc(
+    principal: i64,
+    annual_rate: f64,
+    remaining_months: u32,
+    method: AmortizationMethod,
+) -> AmortResult {
+    if principal <= 0 || remaining_months == 0 {
+        return AmortResult::default();
+    }
+
+    let n = remaining_months as f64;
+    let p = principal as f64;
+
+    // Monthly interest component is the same for both methods.
+    let monthly_rate = annual_rate / 12.0;
+    let interest = (p * monthly_rate).round() as i64;
+
+    match method {
+        // French and FixedPayment both use the constant-annuity formula.
+        // German and FixedPrincipal both use the constant-principal formula.
+        method if !method.is_fixed_principal() => {
+            // Annuity formula: M = P × r / (1 − (1+r)^−n)
+            // When rate is zero fall back to simple equal split.
+            let payment = if monthly_rate < 1e-12 {
+                (p / n).round() as i64
+            } else {
+                let factor = monthly_rate / (1.0 - (1.0 + monthly_rate).powf(-n));
+                (p * factor).round() as i64
+            };
+            // Principal portion = payment − interest (floor to avoid rounding overshoot).
+            let principal_part = (payment - interest).max(0);
+            AmortResult {
+                monthly_interest:  interest,
+                monthly_principal: principal_part,
+                monthly_payment:   principal_part + interest,
+            }
+        }
+        _ => {
+            // FixedPrincipal / German: constant P/n each month.
+            let principal_part = (p / n).round() as i64;
+            AmortResult {
+                monthly_interest:  interest,
+                monthly_principal: principal_part,
+                monthly_payment:   principal_part + interest,
+            }
+        }
+    }
+}
+
+// ── Mortgage ──────────────────────────────────────────────────────────────────
+
+/// Mortgage / housing loan details.
+/// `monthly_principal`, `monthly_interest`, and `monthly_payment` are
+/// **derived** — they are recomputed automatically whenever any input changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mortgage {
+    /// Outstanding principal balance (残高) — input
+    pub principal: i64,
+    /// Annual interest rate as a decimal, e.g. 0.006 for 0.6% (年利) — input
+    pub interest_rate: f64,
+    /// Remaining term in months (残期間) — input
+    pub remaining_months: u32,
+    /// Monthly insurance / guarantee fee (保証料等) — input
+    pub monthly_insurance: i64,
+    /// Amortization method — input
+    pub amortization: AmortizationMethod,
+
+    // ── Computed (recalculated on every input change) ─────────────────────────
+    pub monthly_principal: i64,
+    pub monthly_interest:  i64,
+    /// monthly_principal + monthly_interest + monthly_insurance
+    pub monthly_total: i64,
+}
+
+impl Mortgage {
+    pub fn new() -> Self {
+        let mut s = Self {
+            principal: 0,
+            interest_rate: 0.0,
+            remaining_months: 0,
+            monthly_insurance: 0,
+            amortization: AmortizationMethod::default(),
+            monthly_principal: 0,
+            monthly_interest: 0,
+            monthly_total: 0,
+        };
+        s.recalculate();
+        s
+    }
+
+    /// Recompute the derived monthly breakdown from the input fields.
+    /// Call this after changing any of: principal, interest_rate,
+    /// remaining_months, monthly_insurance, amortization.
+    pub fn recalculate(&mut self) {
+        let r = amort_calc(
+            self.principal,
+            self.interest_rate,
+            self.remaining_months,
+            self.amortization,
+        );
+        self.monthly_principal = r.monthly_principal;
+        self.monthly_interest  = r.monthly_interest;
+        self.monthly_total     = r.monthly_payment + self.monthly_insurance;
+    }
+}
+
+impl Default for Mortgage {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Car loan ──────────────────────────────────────────────────────────────────
+
+/// Car loan details.
+/// Same auto-calculation approach as Mortgage, without insurance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarLoan {
+    /// Outstanding principal balance (残高) — input
+    pub principal: i64,
+    /// Annual interest rate as a decimal (年利) — input
+    pub interest_rate: f64,
+    /// Remaining term in months (残期間) — input
+    pub remaining_months: u32,
+    /// Amortization method — input
+    pub amortization: AmortizationMethod,
+
+    // ── Computed ──────────────────────────────────────────────────────────────
+    pub monthly_principal: i64,
+    pub monthly_interest:  i64,
+    pub monthly_total:     i64,
+}
+
+impl CarLoan {
+    pub fn new() -> Self {
+        let mut s = Self {
+            principal: 0,
+            interest_rate: 0.0,
+            remaining_months: 0,
+            amortization: AmortizationMethod::default(),
+            monthly_principal: 0,
+            monthly_interest: 0,
+            monthly_total: 0,
+        };
+        s.recalculate();
+        s
+    }
+
+    pub fn recalculate(&mut self) {
+        let r = amort_calc(
+            self.principal,
+            self.interest_rate,
+            self.remaining_months,
+            self.amortization,
+        );
+        self.monthly_principal = r.monthly_principal;
+        self.monthly_interest  = r.monthly_interest;
+        self.monthly_total     = r.monthly_payment;
+    }
+}
+
+impl Default for CarLoan {
+    fn default() -> Self { Self::new() }
+}
+
+/// A single general debt / credit line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Debt {
+    pub label: String,
+    pub principal: i64,
+    pub monthly_payment: i64,
+    pub interest_rate: f64,
+    pub remaining_months: u32,
+}
+
+impl Debt {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            principal: 0,
+            monthly_payment: 0,
+            interest_rate: 0.0,
+            remaining_months: 0,
+        }
+    }
+}
+
+/// Top-level loans container.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Loans {
-    pub income_fraction: f64,
-    pub loans: Vec<Loan>,
+    pub mortgage: Mortgage,
+    pub car: CarLoan,
+    pub debts: Vec<Debt>,
 }
 
 impl Loans {
-    pub fn total_payment(&self, total_income: i64) -> i64 {
-        (total_income as f64 * self.income_fraction).round() as i64
+    pub fn total_monthly(&self) -> i64 {
+        self.mortgage.monthly_total
+            + self.car.monthly_total
+            + self.debts.iter().map(|d| d.monthly_payment).sum::<i64>()
     }
-    pub fn payment_for(&self, loan: &Loan, total_income: i64) -> i64 {
-        let total = self.total_payment(total_income);
-        (total as f64 * loan.fraction).round() as i64
+}
+
+impl Default for Loans {
+    fn default() -> Self {
+        Self {
+            mortgage: Mortgage::default(),
+            car: CarLoan::default(),
+            debts: Vec::new(),
+        }
     }
 }
 
@@ -190,7 +455,7 @@ impl PersonalExpenses {
     pub fn total_b(&self) -> i64 { self.items.iter().map(|i| i.amount_b).sum() }
 }
 
-// ── Family Expenses ──────────────────────────────────────────────────────────
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FamilyExpenseItem {
@@ -287,8 +552,8 @@ impl Budget {
             IncomeScenario::ParentalLeaveLate  => m.map(|x| x.parental_leave_late).unwrap_or(0),
         }
     }
-    pub fn loan_total(&self, s: IncomeScenario) -> i64 {
-        self.loans.total_payment(self.effective_income_total(s))
+    pub fn loan_total(&self, _s: IncomeScenario) -> i64 {
+        self.loans.total_monthly()
     }
     pub fn balance_after_loans(&self, s: IncomeScenario) -> i64 {
         self.effective_income_total(s) - self.loan_total(s)
@@ -300,7 +565,7 @@ impl Budget {
         self.balance_after_loans(s) - self.total_expenses()
     }
     pub fn loan_a(&self, _s: IncomeScenario) -> i64 { 0 }
-    pub fn loan_b(&self, s: IncomeScenario) -> i64  { self.loan_total(s) }
+    pub fn loan_b(&self, s: IncomeScenario)  -> i64 { self.loan_total(s) }
     pub fn personal_tax_a(&self) -> i64 { 0 }
     pub fn personal_tax_b(&self) -> i64 { 0 }
 
@@ -399,13 +664,7 @@ impl Default for Budget {
                     IncomeMember::new("B", 0, 0, 0),
                 ],
             },
-            loans: Loans {
-                income_fraction: 0.0,
-                loans: vec![
-                    Loan { label: "House mortgage".into(), fraction: 0.90 },
-                    Loan { label: "Car loan".into(),       fraction: 0.10 },
-                ],
-            },
+            loans: Loans::default(),
             personal_expenses: PersonalExpenses {
                 items: vec![
                     PersonalExpenseItem { label: "Phone".into(),           amount_a: 0, amount_b: 0 },

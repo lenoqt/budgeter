@@ -1,7 +1,7 @@
 //! Application state machine — tabs, navigation, editing, and business logic.
 
 use crate::model::{
-    Budget, CardProvider, FamilyExpenseItem, IncomeScenario, OtherItem, PersonalExpenseItem,
+    Budget, CardProvider, Debt, FamilyExpenseItem, IncomeScenario, OtherItem, PersonalExpenseItem,
     Transaction,
 };
 
@@ -152,16 +152,129 @@ impl IncomeField {
     }
 }
 
-/// Loan row fields.
+/// Which subsection of the Loans tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoanField {
-    Label,
-    Fraction,
+pub enum LoanSection {
+    Mortgage,
+    Car,
+    Debts,
 }
 
-impl LoanField {
+impl LoanSection {
     pub fn next(self) -> Self {
-        match self { Self::Label => Self::Fraction, Self::Fraction => Self::Label }
+        match self {
+            Self::Mortgage => Self::Car,
+            Self::Car      => Self::Debts,
+            Self::Debts    => Self::Mortgage,
+        }
+    }
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Mortgage => Self::Debts,
+            Self::Car      => Self::Mortgage,
+            Self::Debts    => Self::Car,
+        }
+    }
+}
+
+/// Editable input fields inside the Mortgage subsection.
+/// MonthlyPrincipal, MonthlyInterest, and MonthlyTotal are computed — not editable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MortgageField {
+    Principal,
+    InterestRate,
+    RemainingMonths,
+    MonthlyInsurance,
+    Amortization,
+}
+
+impl MortgageField {
+    pub const ALL: &'static [MortgageField] = &[
+        Self::Principal,
+        Self::InterestRate,
+        Self::RemainingMonths,
+        Self::MonthlyInsurance,
+        Self::Amortization,
+    ];
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Principal        => "Outstanding principal (残高)",
+            Self::InterestRate     => "Annual interest rate % (年利)",
+            Self::RemainingMonths  => "Remaining months (残期間)",
+            Self::MonthlyInsurance => "Monthly insurance / fee (保証料等)",
+            Self::Amortization     => "Amortization method (返済方式)",
+        }
+    }
+}
+
+/// Editable input fields inside the Car loan subsection.
+/// MonthlyPrincipal, MonthlyInterest, and MonthlyTotal are computed — not editable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarField {
+    Principal,
+    InterestRate,
+    RemainingMonths,
+    Amortization,
+}
+
+impl CarField {
+    pub const ALL: &'static [CarField] = &[
+        Self::Principal,
+        Self::InterestRate,
+        Self::RemainingMonths,
+        Self::Amortization,
+    ];
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Principal    => "Outstanding principal (残高)",
+            Self::InterestRate => "Annual interest rate % (年利)",
+            Self::RemainingMonths => "Remaining months (残期間)",
+            Self::Amortization => "Amortization method (返済方式)",
+        }
+    }
+}
+
+/// Fields inside a single Debt row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebtField {
+    Label,
+    Principal,
+    MonthlyPayment,
+    InterestRate,
+    RemainingMonths,
+}
+
+impl DebtField {
+    pub const ALL: &'static [DebtField] = &[
+        Self::Label,
+        Self::Principal,
+        Self::MonthlyPayment,
+        Self::InterestRate,
+        Self::RemainingMonths,
+    ];
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 }
 
@@ -239,11 +352,14 @@ pub struct App {
     pub selected_row: usize,
 
     /// Active column / field within the selected row.
-    pub income_field:   IncomeField,
-    pub loan_field:     LoanField,
-    pub personal_field: PersonalField,
-    pub family_field:   FamilyField,
-    pub other_field:    OtherField,
+    pub income_field:    IncomeField,
+    pub loan_section:    LoanSection,
+    pub mortgage_field:  MortgageField,
+    pub car_field:       CarField,
+    pub debt_field:      DebtField,
+    pub personal_field:  PersonalField,
+    pub family_field:    FamilyField,
+    pub other_field:     OtherField,
 
     // ── Edit buffer ───────────────────────────────────────────────────────────
     /// Text currently being edited.
@@ -301,7 +417,10 @@ impl App {
             edit_mode: EditMode::Normal,
             selected_row: 0,
             income_field: IncomeField::Name,
-            loan_field: LoanField::Label,
+            loan_section: LoanSection::Mortgage,
+            mortgage_field: MortgageField::Principal,
+            car_field: CarField::Principal,
+            debt_field: DebtField::Label,
             personal_field: PersonalField::Label,
             family_field: FamilyField::Label,
             other_field: OtherField::Label,
@@ -348,7 +467,7 @@ impl App {
     }
 
     pub fn loan_row_count(&self) -> usize {
-        self.budget.loans.loans.len()
+        self.budget.loans.debts.len()
     }
 
     pub fn personal_row_count(&self) -> usize {
@@ -366,7 +485,11 @@ impl App {
     fn active_row_count(&self) -> usize {
         match self.active_tab {
             Tab::Income           => self.income_row_count(),
-            Tab::Loans            => self.loan_row_count(),
+            Tab::Loans            => match self.loan_section {
+                LoanSection::Mortgage => MortgageField::ALL.len(),
+                LoanSection::Car      => CarField::ALL.len(),
+                LoanSection::Debts    => self.budget.loans.debts.len(),
+            },
             Tab::PersonalExpenses => self.personal_row_count(),
             Tab::FamilyExpenses   => self.family_row_count(),
             Tab::OtherItems       => self.other_row_count(),
@@ -398,6 +521,27 @@ impl App {
         let n = self.active_row_count();
         if n == 0 { return; }
         match self.active_tab {
+            Tab::Loans => {
+                match self.loan_section {
+                    LoanSection::Mortgage => {
+                        let i = MortgageField::ALL.iter()
+                            .position(|f| *f == self.mortgage_field)
+                            .unwrap_or(0);
+                        let next = (i + 1).min(MortgageField::ALL.len() - 1);
+                        self.mortgage_field = MortgageField::ALL[next];
+                    }
+                    LoanSection::Car => {
+                        let i = CarField::ALL.iter()
+                            .position(|f| *f == self.car_field)
+                            .unwrap_or(0);
+                        let next = (i + 1).min(CarField::ALL.len() - 1);
+                        self.car_field = CarField::ALL[next];
+                    }
+                    LoanSection::Debts => {
+                        self.selected_row = (self.selected_row + 1).min(n - 1);
+                    }
+                }
+            }
             Tab::Spending => {
                 if self.spending_drill {
                     self.spending_tx_selected = (self.spending_tx_selected + 1).min(n - 1);
@@ -416,6 +560,25 @@ impl App {
 
     pub fn nav_row_up(&mut self) {
         match self.active_tab {
+            Tab::Loans => {
+                match self.loan_section {
+                    LoanSection::Mortgage => {
+                        let i = MortgageField::ALL.iter()
+                            .position(|f| *f == self.mortgage_field)
+                            .unwrap_or(0);
+                        if i > 0 { self.mortgage_field = MortgageField::ALL[i - 1]; }
+                    }
+                    LoanSection::Car => {
+                        let i = CarField::ALL.iter()
+                            .position(|f| *f == self.car_field)
+                            .unwrap_or(0);
+                        if i > 0 { self.car_field = CarField::ALL[i - 1]; }
+                    }
+                    LoanSection::Debts => {
+                        if self.selected_row > 0 { self.selected_row -= 1; }
+                    }
+                }
+            }
             Tab::Spending => {
                 if self.spending_drill {
                     if self.spending_tx_selected > 0 { self.spending_tx_selected -= 1; }
@@ -434,8 +597,21 @@ impl App {
 
     pub fn nav_col_next(&mut self) {
         match self.active_tab {
-            Tab::Income           => self.income_field   = self.income_field.next(),
-            Tab::Loans            => self.loan_field     = self.loan_field.next(),
+            Tab::Income           => self.income_field  = self.income_field.next(),
+            Tab::Loans            => {
+                match self.loan_section {
+                    // In Debts: ← → moves between columns of the selected debt row.
+                    LoanSection::Debts => {
+                        let i = DebtField::ALL.iter()
+                            .position(|f| *f == self.debt_field)
+                            .unwrap_or(0);
+                        let next = (i + 1).min(DebtField::ALL.len() - 1);
+                        self.debt_field = DebtField::ALL[next];
+                    }
+                    // In Mortgage / Car: ← → switches to the next section panel.
+                    _ => self.loan_section = self.loan_section.next(),
+                }
+            }
             Tab::PersonalExpenses => self.personal_field = self.personal_field.next(),
             Tab::FamilyExpenses   => self.family_field   = self.family_field.next(),
             Tab::OtherItems       => self.other_field    = self.other_field.next(),
@@ -452,8 +628,20 @@ impl App {
 
     pub fn nav_col_prev(&mut self) {
         match self.active_tab {
-            Tab::Income           => self.income_field   = self.income_field.prev(),
-            Tab::Loans            => self.loan_field     = self.loan_field.next(), // only 2
+            Tab::Income           => self.income_field  = self.income_field.prev(),
+            Tab::Loans            => {
+                match self.loan_section {
+                    // In Debts: ← → moves between columns of the selected debt row.
+                    LoanSection::Debts => {
+                        let i = DebtField::ALL.iter()
+                            .position(|f| *f == self.debt_field)
+                            .unwrap_or(0);
+                        if i > 0 { self.debt_field = DebtField::ALL[i - 1]; }
+                    }
+                    // In Mortgage / Car: ← → switches to the previous section panel.
+                    _ => self.loan_section = self.loan_section.prev(),
+                }
+            }
             Tab::PersonalExpenses => self.personal_field = self.personal_field.prev(),
             Tab::FamilyExpenses   => self.family_field   = self.family_field.prev(),
             Tab::OtherItems       => self.other_field    = self.other_field.prev(),
@@ -472,6 +660,27 @@ impl App {
 
     /// Read the current cell value into the edit buffer and enter Editing mode.
     pub fn begin_edit(&mut self) {
+        // Amortization fields cycle on Enter instead of opening a text editor.
+        if self.active_tab == Tab::Loans {
+            match self.loan_section {
+                LoanSection::Mortgage if self.mortgage_field == MortgageField::Amortization => {
+                    self.budget.loans.mortgage.amortization =
+                        self.budget.loans.mortgage.amortization.cycle();
+                    self.budget.loans.mortgage.recalculate();
+                    self.dirty = true;
+                    return;
+                }
+                LoanSection::Car if self.car_field == CarField::Amortization => {
+                    self.budget.loans.car.amortization =
+                        self.budget.loans.car.amortization.cycle();
+                    self.budget.loans.car.recalculate();
+                    self.dirty = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match self.active_tab {
             Tab::Import => {
                 match self.import_focus {
@@ -573,6 +782,13 @@ impl App {
 
     pub fn add_row(&mut self) {
         match self.active_tab {
+            Tab::Loans => {
+                if self.loan_section == LoanSection::Debts {
+                    self.budget.loans.debts.push(Debt::new("New debt"));
+                    self.selected_row = self.budget.loans.debts.len() - 1;
+                    self.dirty = true;
+                }
+            }
             Tab::PersonalExpenses => {
                 self.budget.personal_expenses.items.push(PersonalExpenseItem {
                     label: "New item".into(),
@@ -624,6 +840,19 @@ impl App {
                 if r < self.budget.other_items.items.len() {
                     self.budget.other_items.items.remove(r);
                     self.dirty = true;
+                }
+            }
+            Tab::Loans => {
+                // Only Debts section supports adding/removing rows.
+                if self.loan_section == LoanSection::Debts {
+                    if r < self.budget.loans.debts.len() {
+                        self.budget.loans.debts.remove(r);
+                        self.dirty = true;
+                        let n = self.budget.loans.debts.len();
+                        if n > 0 && self.selected_row >= n {
+                            self.selected_row = n - 1;
+                        }
+                    }
                 }
             }
             Tab::Import => {
@@ -817,26 +1046,37 @@ impl App {
                 } else { String::new() }
             }
             Tab::Loans => {
-                match self.loan_field {
-                    LoanField::Label => {
-                        if r == 0 {
-                            format!("{:.0}", self.budget.loans.income_fraction * 100.0)
-                        } else {
-                            self.budget.loans.loans
-                                .get(r - 1)
-                                .map(|l| l.label.clone())
-                                .unwrap_or_default()
+                match self.loan_section {
+                    LoanSection::Mortgage => {
+                        let m = &self.budget.loans.mortgage;
+                        match self.mortgage_field {
+                            MortgageField::Principal        => m.principal.to_string(),
+                            MortgageField::InterestRate     => format!("{:.4}", m.interest_rate * 100.0),
+                            MortgageField::RemainingMonths  => m.remaining_months.to_string(),
+                            MortgageField::MonthlyInsurance => m.monthly_insurance.to_string(),
+                            // Amortization just shows the label; toggled with Enter, not free-typed.
+                            MortgageField::Amortization     => m.amortization.label().to_string(),
                         }
                     }
-                    LoanField::Fraction => {
-                        if r == 0 {
-                            format!("{:.0}", self.budget.loans.income_fraction * 100.0)
-                        } else {
-                            self.budget.loans.loans
-                                .get(r - 1)
-                                .map(|l| format!("{:.0}", l.fraction * 100.0))
-                                .unwrap_or_default()
+                    LoanSection::Car => {
+                        let c = &self.budget.loans.car;
+                        match self.car_field {
+                            CarField::Principal        => c.principal.to_string(),
+                            CarField::InterestRate     => format!("{:.4}", c.interest_rate * 100.0),
+                            CarField::RemainingMonths  => c.remaining_months.to_string(),
+                            CarField::Amortization     => c.amortization.label().to_string(),
                         }
+                    }
+                    LoanSection::Debts => {
+                        if let Some(d) = self.budget.loans.debts.get(r) {
+                            match self.debt_field {
+                                DebtField::Label           => d.label.clone(),
+                                DebtField::Principal       => d.principal.to_string(),
+                                DebtField::MonthlyPayment  => d.monthly_payment.to_string(),
+                                DebtField::InterestRate    => format!("{:.4}", d.interest_rate * 100.0),
+                                DebtField::RemainingMonths => d.remaining_months.to_string(),
+                            }
+                        } else { String::new() }
                     }
                 }
             }
@@ -887,21 +1127,38 @@ impl App {
                 }
             }
             Tab::Loans => {
-                match self.loan_field {
-                    LoanField::Label => {
-                        if r == 0 {
-                            let pct = parse_pct(buf)?;
-                            self.budget.loans.income_fraction = pct;
-                        } else if let Some(l) = self.budget.loans.loans.get_mut(r - 1) {
-                            l.label = buf.to_string();
+                match self.loan_section {
+                    LoanSection::Mortgage => {
+                        let m = &mut self.budget.loans.mortgage;
+                        match self.mortgage_field {
+                            MortgageField::Principal        => m.principal        = parse_jpy(buf)?,
+                            MortgageField::InterestRate     => m.interest_rate    = parse_rate(buf)?,
+                            MortgageField::RemainingMonths  => m.remaining_months = parse_u32(buf)?,
+                            MortgageField::MonthlyInsurance => m.monthly_insurance = parse_jpy(buf)?,
+                            // Amortization is toggled via begin_edit, not free-typed — nothing to parse.
+                            MortgageField::Amortization     => {}
                         }
+                        self.budget.loans.mortgage.recalculate();
                     }
-                    LoanField::Fraction => {
-                        if r == 0 {
-                            let pct = parse_pct(buf)?;
-                            self.budget.loans.income_fraction = pct;
-                        } else if let Some(l) = self.budget.loans.loans.get_mut(r - 1) {
-                            l.fraction = parse_pct(buf)?;
+                    LoanSection::Car => {
+                        let c = &mut self.budget.loans.car;
+                        match self.car_field {
+                            CarField::Principal        => c.principal         = parse_jpy(buf)?,
+                            CarField::InterestRate     => c.interest_rate     = parse_rate(buf)?,
+                            CarField::RemainingMonths  => c.remaining_months  = parse_u32(buf)?,
+                            CarField::Amortization     => {}
+                        }
+                        self.budget.loans.car.recalculate();
+                    }
+                    LoanSection::Debts => {
+                        if let Some(d) = self.budget.loans.debts.get_mut(r) {
+                            match self.debt_field {
+                                DebtField::Label           => d.label           = buf.to_string(),
+                                DebtField::Principal       => d.principal       = parse_jpy(buf)?,
+                                DebtField::MonthlyPayment  => d.monthly_payment = parse_jpy(buf)?,
+                                DebtField::InterestRate    => d.interest_rate   = parse_rate(buf)?,
+                                DebtField::RemainingMonths => d.remaining_months = parse_u32(buf)?,
+                            }
                         }
                     }
                 }
@@ -973,4 +1230,23 @@ pub fn parse_pct(s: &str) -> Result<f64, String> {
     let v: f64 = clean.parse()
         .map_err(|_| format!("'{}' is not a valid percentage", s))?;
     Ok(v / 100.0)
+}
+
+/// Parse an interest rate entered as e.g. "0.6" or "0.6%" → 0.006 (stored as fraction).
+pub fn parse_rate(s: &str) -> Result<f64, String> {
+    let clean: String = s.chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    let v: f64 = clean.parse()
+        .map_err(|_| format!("'{}' is not a valid rate", s))?;
+    // Accept either 0.6 (meaning 0.6%) or 0.006 (already a fraction).
+    // Heuristic: if > 0.2 it's entered as percentage points.
+    Ok(if v > 0.2 { v / 100.0 } else { v })
+}
+
+/// Parse a non-negative integer (months count, etc.).
+pub fn parse_u32(s: &str) -> Result<u32, String> {
+    let clean: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    clean.parse::<u32>()
+        .map_err(|_| format!("'{}' is not a valid whole number", s))
 }
