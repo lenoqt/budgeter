@@ -194,6 +194,45 @@ fn handle_normal(
                 _ => {}
             }
         }
+        Tab::Loans => {
+            use crate::app::LoanSection;
+            match code {
+                // Esc — exit Debts subsection back to Mortgage
+                KeyCode::Esc => {
+                    if app.loan_section == LoanSection::Debts {
+                        app.loan_section = LoanSection::Mortgage;
+                        return Ok(false);
+                    }
+                }
+                // ← at leftmost Debts column → switch to Car panel
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if app.loan_section == LoanSection::Debts {
+                        use crate::app::DebtField;
+                        let i = DebtField::ALL.iter()
+                            .position(|f| *f == app.debt_field)
+                            .unwrap_or(0);
+                        if i == 0 {
+                            app.loan_section = LoanSection::Car;
+                            return Ok(false);
+                        }
+                    }
+                }
+                // → at rightmost Debts column → wrap back to Mortgage panel
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if app.loan_section == LoanSection::Debts {
+                        use crate::app::DebtField;
+                        let i = DebtField::ALL.iter()
+                            .position(|f| *f == app.debt_field)
+                            .unwrap_or(0);
+                        if i == DebtField::ALL.len() - 1 {
+                            app.loan_section = LoanSection::Mortgage;
+                            return Ok(false);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         _ => {}
     }
 

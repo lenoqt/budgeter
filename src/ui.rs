@@ -420,7 +420,9 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
             MRow::Computed("  ↳ Monthly interest  (利息)",  jpy(m.monthly_interest)),
             MRow::Input(MortgageField::MonthlyInsurance, "  + Insurance/fee (保証料)", jpy(m.monthly_insurance)),
             MRow::Separator,
-            MRow::Computed("  = Monthly total",            jpy(m.monthly_total)),
+            MRow::Computed("  = Monthly total (exact)",    jpy(m.monthly_total)),
+            MRow::Computed("  = Monthly total (¥100 rounded)", jpy(m.rounded_total)),
+            MRow::Computed("  = First payment  (w/ shortfall)", jpy(m.first_payment)),
         ];
 
         // Build the TableState selection index — only Input rows are selectable.
@@ -486,7 +488,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(section_border(LoanSection::Mortgage)))
                 .title(Span::styled(
-                    format!(" 🏠 Mortgage ({}/mo) ", jpy(m.monthly_total)),
+                    format!(" 🏠 Mortgage (exact {}/mo, ~{}/mo) ", jpy(m.monthly_total), jpy(m.rounded_total)),
                     section_title_style(LoanSection::Mortgage),
                 )),
         );
@@ -516,7 +518,9 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
             CRow::Computed("  ↳ Monthly principal (元金)", jpy(c.monthly_principal)),
             CRow::Computed("  ↳ Monthly interest  (利息)", jpy(c.monthly_interest)),
             CRow::Separator,
-            CRow::Computed("  = Monthly total",            jpy(c.monthly_total)),
+            CRow::Computed("  = Monthly total (exact)",    jpy(c.monthly_total)),
+            CRow::Computed("  = Monthly total (¥100 rounded)", jpy(c.rounded_total)),
+            CRow::Computed("  = First payment  (w/ shortfall)", jpy(c.first_payment)),
         ];
 
         let input_positions: Vec<usize> = rows_def.iter().enumerate()
@@ -581,7 +585,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(section_border(LoanSection::Car)))
                 .title(Span::styled(
-                    format!(" 🚗 Car Loan ({}/mo) ", jpy(c.monthly_total)),
+                    format!(" 🚗 Car Loan (exact {}/mo, ~{}/mo) ", jpy(c.monthly_total), jpy(c.rounded_total)),
                     section_title_style(LoanSection::Car),
                 )),
         );
@@ -677,16 +681,15 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
     // ── Hint bar ──────────────────────────────────────────────────────────────
     let hint = match app.loan_section {
         LoanSection::Debts => hint_line(&[
-            ("Tab/Shift-Tab", "switch section"),
+            ("Esc", "back to Mortgage"),
             ("↑↓", "select debt row"),
-            ("←→", "move column"),
+            ("←→", "move column (edge: switch panel)"),
             ("Enter/e", "edit cell"),
             ("a", "add debt"),
             ("d", "delete debt"),
         ]),
         _ => hint_line(&[
-            ("Tab/Shift-Tab", "switch section"),
-            ("←→", "switch section"),
+            ("←→", "switch panel"),
             ("↑↓", "move field"),
             ("Enter/e", "edit / cycle method"),
             ("s", "cycle scenario"),

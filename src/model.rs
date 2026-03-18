@@ -209,17 +209,43 @@ impl Default for AmortizationMethod {
 // ── Amortization calculation helpers ─────────────────────────────────────────
 
 /// Result of one month's amortization calculation.
+///
+/// `monthly_payment` is the mathematically exact annuity rounded to the
+/// nearest yen.  `rounded_payment` rounds further to the nearest ¥100
+/// (common Japanese dealer convention). When a dealer uses ¥100 rounding
+/// they collect the shortfall as a bump on the very first payment, stored
+/// in `first_payment`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AmortResult {
     pub monthly_principal: i64,
     pub monthly_interest:  i64,
-    pub monthly_payment:   i64, // principal + interest (no insurance)
+    /// Exact annuity payment rounded to nearest ¥1 (principal + interest).
+    pub monthly_payment:   i64,
+    /// Payment rounded down to nearest ¥100 — matches dealer quote style.
+    pub rounded_payment:   i64,
+    /// First payment when using ¥100 rounding: rounded_payment + shortfall.
+    /// For a standard (non-rounded) loan this equals monthly_payment.
+    pub first_payment:     i64,
 }
 
 /// Compute this month's principal and interest split for a given loan.
 ///
-/// Returns `AmortResult::default()` (all zeroes) when inputs are degenerate
-/// (zero principal, zero rate, or zero remaining months).
+/// **`principal` must be the actual loan balance borrowed (元金残高) — NOT
+/// the total installment price (割賦販売価格) which already includes all
+/// accumulated interest charges.**
+///
+/// ### Why the dealer's figure can differ from the exact annuity
+/// Japanese auto dealers commonly:
+/// 1. Compute the exact annuity (e.g. ¥22,329).
+/// 2. Round it **down** to the nearest ¥100 (→ ¥22,300).
+/// 3. Collect the total rounding shortfall (29 × 60 = ¥1,740) as a bump
+///    on the first payment (¥22,300 + ¥1,746 = ¥24,046, the extra ¥6
+///    being stamp/handling fees).
+/// The app shows both the exact payment and the ¥100-rounded version so
+/// you can match either figure.
+///
+/// Returns all-zero `AmortResult` when inputs are degenerate (zero
+/// principal, zero rate, or zero remaining months).
 pub fn amort_calc(
     principal: i64,
     annual_rate: f64,
@@ -230,40 +256,61 @@ pub fn amort_calc(
         return AmortResult::default();
     }
 
-    let n = remaining_months as f64;
-    let p = principal as f64;
-
-    // Monthly interest component is the same for both methods.
-    let monthly_rate = annual_rate / 12.0;
-    let interest = (p * monthly_rate).round() as i64;
+    let n   = remaining_months as f64;
+    let p   = principal as f64;
+    let r   = annual_rate / 12.0; // monthly rate
 
     match method {
-        // French and FixedPayment both use the constant-annuity formula.
-        // German and FixedPrincipal both use the constant-principal formula.
+        // ── Fixed payment / French — constant annuity (元利均等返済) ──────────
+        // Formula: M = P × r / (1 − (1+r)^−n)
+        // We keep the payment as a float until the very last step so that the
+        // interest + principal split always sums back to monthly_payment exactly.
         method if !method.is_fixed_principal() => {
-            // Annuity formula: M = P × r / (1 − (1+r)^−n)
-            // When rate is zero fall back to simple equal split.
-            let payment = if monthly_rate < 1e-12 {
-                (p / n).round() as i64
+            // Exact annuity payment (float, before rounding).
+            let payment_f: f64 = if r < 1e-12 {
+                p / n   // zero-rate: equal slices
             } else {
-                let factor = monthly_rate / (1.0 - (1.0 + monthly_rate).powf(-n));
-                (p * factor).round() as i64
+                let factor = r / (1.0 - (1.0 + r).powf(-n));
+                p * factor
             };
-            // Principal portion = payment − interest (floor to avoid rounding overshoot).
-            let principal_part = (payment - interest).max(0);
+
+            // Interest on the current balance (float, before rounding).
+            let interest_f  = p * r;
+
+            // Round each component independently; keep them consistent.
+            let monthly_payment   = payment_f.round() as i64;
+            let monthly_interest  = interest_f.round() as i64;
+            let monthly_principal = (monthly_payment - monthly_interest).max(0);
+
+            // Dealer-style ¥100 rounding: floor to nearest 100.
+            let rounded_payment = (monthly_payment / 100) * 100;
+            // Shortfall per month × n months = total shortfall added to first payment.
+            let shortfall   = (monthly_payment - rounded_payment) * remaining_months as i64;
+            let first_payment = rounded_payment + shortfall;
+
             AmortResult {
-                monthly_interest:  interest,
-                monthly_principal: principal_part,
-                monthly_payment:   principal_part + interest,
+                monthly_principal,
+                monthly_interest,
+                monthly_payment,
+                rounded_payment,
+                first_payment,
             }
         }
+
+        // ── Fixed principal / German — constant principal (元金均等返済) ──────
+        // Principal slice is constant; interest falls each month as balance drops.
         _ => {
-            // FixedPrincipal / German: constant P/n each month.
             let principal_part = (p / n).round() as i64;
+            let interest_part  = (p * r).round() as i64;
+            let monthly_payment = principal_part + interest_part;
+
             AmortResult {
-                monthly_interest:  interest,
                 monthly_principal: principal_part,
-                monthly_payment:   principal_part + interest,
+                monthly_interest:  interest_part,
+                monthly_payment,
+                // Fixed-principal loans don't use dealer rounding — show exact.
+                rounded_payment:   monthly_payment,
+                first_payment:     monthly_payment,
             }
         }
     }
@@ -290,8 +337,12 @@ pub struct Mortgage {
     // ── Computed (recalculated on every input change) ─────────────────────────
     pub monthly_principal: i64,
     pub monthly_interest:  i64,
-    /// monthly_principal + monthly_interest + monthly_insurance
+    /// Exact annuity + insurance (nearest ¥1).
     pub monthly_total: i64,
+    /// ¥100-rounded payment + insurance (matches dealer quotes).
+    pub rounded_total: i64,
+    /// First payment when using ¥100 rounding + insurance.
+    pub first_payment: i64,
 }
 
 impl Mortgage {
@@ -305,14 +356,16 @@ impl Mortgage {
             monthly_principal: 0,
             monthly_interest: 0,
             monthly_total: 0,
+            rounded_total: 0,
+            first_payment: 0,
         };
         s.recalculate();
         s
     }
 
-    /// Recompute the derived monthly breakdown from the input fields.
-    /// Call this after changing any of: principal, interest_rate,
-    /// remaining_months, monthly_insurance, amortization.
+    /// Recompute all derived fields from inputs.
+    /// Call after changing: principal, interest_rate, remaining_months,
+    /// monthly_insurance, or amortization.
     pub fn recalculate(&mut self) {
         let r = amort_calc(
             self.principal,
@@ -322,7 +375,9 @@ impl Mortgage {
         );
         self.monthly_principal = r.monthly_principal;
         self.monthly_interest  = r.monthly_interest;
-        self.monthly_total     = r.monthly_payment + self.monthly_insurance;
+        self.monthly_total     = r.monthly_payment   + self.monthly_insurance;
+        self.rounded_total     = r.rounded_payment   + self.monthly_insurance;
+        self.first_payment     = r.first_payment     + self.monthly_insurance;
     }
 }
 
@@ -348,7 +403,12 @@ pub struct CarLoan {
     // ── Computed ──────────────────────────────────────────────────────────────
     pub monthly_principal: i64,
     pub monthly_interest:  i64,
+    /// Exact annuity (nearest ¥1).
     pub monthly_total:     i64,
+    /// ¥100-rounded payment (matches dealer quotes).
+    pub rounded_total:     i64,
+    /// First payment when using ¥100 rounding.
+    pub first_payment:     i64,
 }
 
 impl CarLoan {
@@ -361,6 +421,8 @@ impl CarLoan {
             monthly_principal: 0,
             monthly_interest: 0,
             monthly_total: 0,
+            rounded_total: 0,
+            first_payment: 0,
         };
         s.recalculate();
         s
@@ -376,6 +438,8 @@ impl CarLoan {
         self.monthly_principal = r.monthly_principal;
         self.monthly_interest  = r.monthly_interest;
         self.monthly_total     = r.monthly_payment;
+        self.rounded_total     = r.rounded_payment;
+        self.first_payment     = r.first_payment;
     }
 }
 
