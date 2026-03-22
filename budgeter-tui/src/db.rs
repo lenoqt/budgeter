@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use polars::prelude::*;
 
-use crate::model::{
+use budgeter_core::model::{
     Budget, CarLoan, Debt, FamilyExpenseItem, FamilyExpenses, Income, IncomeMember, Loans,
     Mortgage, OtherItem, OtherItems, PersonalExpenseItem, PersonalExpenses, SpendingCategory,
     SpendingLog, Transaction,

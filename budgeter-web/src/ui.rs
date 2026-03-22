@@ -1,4 +1,7 @@
 //! Ratatui rendering — draws every tab, popup, and the status bar.
+//! Web version: uses ratatui 0.25 (matching webatui's dependency).
+//! Import tab is replaced with a read-only info panel (no filesystem in WASM).
+#![allow(dead_code)]
 
 use ratatui::{
     Frame,
@@ -10,8 +13,8 @@ use ratatui::{
     },
 };
 
-use crate::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, OtherField, PersonalField, Popup, Tab};
-use crate::model::IncomeScenario;
+use budgeter_core::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, OtherField, PersonalField, Popup, Tab};
+use budgeter_core::model::IncomeScenario;
 
 /// Truncate a string to at most `max_chars` Unicode scalar values, appending "…" if truncated.
 /// This is safe for strings containing multi-byte characters (e.g. Japanese).
@@ -93,7 +96,7 @@ fn balance_color(v: i64) -> Color {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
+    let area = frame.size();
 
     // Root layout: title bar | tabs bar | content | status bar
     let root = Layout::default()
@@ -345,7 +348,7 @@ fn is_col(app: &App, tab: Tab, col_idx: usize) -> bool {
 // ── Loans tab ────────────────────────────────────────────────────────────────
 
 fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::app::{LoanSection, DebtField};
+    use budgeter_core::app::{LoanSection, DebtField};
 
     let income_total = app.budget.effective_income_total(app.scenario);
     let loan_total   = app.budget.loan_total(app.scenario);
@@ -404,7 +407,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
 
     // ── Mortgage panel ────────────────────────────────────────────────────────
     {
-        use crate::app::MortgageField;
+        use budgeter_core::app::MortgageField;
         let m = &app.budget.loans.mortgage;
         let active = app.loan_section == LoanSection::Mortgage;
 
@@ -450,7 +453,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
             match row_def {
                 MRow::Input(field, label, val) => {
                     let is_sel = active && app.mortgage_field == *field;
-                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let editing = is_sel && app.edit_mode == budgeter_core::app::EditMode::Editing;
                     let display = if editing { app.edit_buf.clone() } else { val.clone() };
                     let is_toggle = matches!(field, MortgageField::Amortization);
                     let lbl_style = if is_sel {
@@ -509,7 +512,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
 
     // ── Car panel ─────────────────────────────────────────────────────────────
     {
-        use crate::app::CarField;
+        use budgeter_core::app::CarField;
         let c = &app.budget.loans.car;
         let active = app.loan_section == LoanSection::Car;
 
@@ -552,7 +555,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
             match row_def {
                 CRow::Input(field, label, val) => {
                     let is_sel = active && app.car_field == *field;
-                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let editing = is_sel && app.edit_mode == budgeter_core::app::EditMode::Editing;
                     let display = if editing { app.edit_buf.clone() } else { val.clone() };
                     let is_toggle = matches!(field, CarField::Amortization);
                     let lbl_style = if is_sel {
@@ -655,7 +658,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
 
                 let cells: Vec<Cell> = col_labels.iter().zip(vals.iter()).map(|(field, val)| {
                     let is_sel = is_row_sel && app.debt_field == *field;
-                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let editing = is_sel && app.edit_mode == budgeter_core::app::EditMode::Editing;
                     let display = if editing { app.edit_buf.clone() } else { val.clone() };
                     let style = if editing {
                         Style::default().fg(C_EDIT_FG).bg(C_EDIT_BG).add_modifier(Modifier::BOLD)
@@ -1372,27 +1375,66 @@ fn draw_spending_drill(frame: &mut Frame, app: &App, area: Rect) {
 
 // ── Import tab ────────────────────────────────────────────────────────────────
 
-fn draw_import(frame: &mut Frame, app: &App, area: Rect) {
-    // Layout: top controls bar | preview table | hint bar
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0), Constraint::Length(1)])
-        .split(area);
+fn draw_import(frame: &mut Frame, _app: &App, area: Rect) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Web Mode — Read Only", Style::default().fg(C_TAB_SEL).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  CSV import is not available in the browser.", Style::default().fg(Color::White)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  To add transactions:", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("    1. Run the terminal app:  ", Style::default().fg(C_DIM)),
+            Span::styled("cargo run -p budgeter-tui", Style::default().fg(C_TAB_SEL)),
+        ]),
+        Line::from(vec![
+            Span::styled("    2. Import your CSV on the Import tab.", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled("    3. Save (S) — this writes ", Style::default().fg(C_DIM)),
+            Span::styled("budget.json", Style::default().fg(C_TAB_SEL)),
+            Span::styled(" automatically.", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  To sync this web view:", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("    Paste the contents of ", Style::default().fg(C_DIM)),
+            Span::styled("budget.json", Style::default().fg(C_TAB_SEL)),
+            Span::styled(" into localStorage key ", Style::default().fg(C_DIM)),
+            Span::styled("\"budget_data\"", Style::default().fg(C_TAB_SEL)),
+            Span::styled(" and reload.", Style::default().fg(C_DIM)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "    Open browser DevTools → Application → Local Storage → set budget_data",
+                Style::default().fg(C_DIM),
+            ),
+        ]),
+    ];
 
-    draw_import_controls(frame, app, root[0]);
-    draw_import_preview(frame, app, root[1]);
-
-    let hint = hint_line(&[
-        ("Tab/→←", "switch field"),
-        ("Enter/e", "edit path / pick category / cycle provider"),
-        ("m", "set member for row"),
-        ("W", "bulk set member"),
-        ("P", "parse CSV"),
-        ("C", "commit to budget"),
-        ("X", "clear preview"),
-        ("d", "discard row"),
-    ]);
-    frame.render_widget(Paragraph::new(hint), root[2]);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(C_BORDER))
+                    .title(Span::styled(
+                        " Import  (web mode — read only) ",
+                        Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD),
+                    )),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_import_controls(frame: &mut Frame, app: &App, area: Rect) {
@@ -1674,7 +1716,7 @@ fn draw_popup_member_picker(frame: &mut Frame, app: &App, area: Rect, _row: usiz
 // ── Popup: loan member picker ─────────────────────────────────────────────────
 
 fn draw_popup_loan_member_picker(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::app::LoanSection;
+    use budgeter_core::app::LoanSection;
 
     let popup_area = centered_rect(44, 16, area);
     frame.render_widget(Clear, popup_area);

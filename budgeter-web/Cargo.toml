@@ -1,0 +1,28 @@
+[package]
+name        = "budgeter-web"
+version.workspace     = true
+edition.workspace     = true
+authors.workspace     = true
+license.workspace     = true
+
+[[bin]]
+name = "budgeter-web"
+path = "src/main.rs"
+
+[dependencies]
+budgeter-core = { path = "../budgeter-core" }
+anyhow        = { workspace = true }
+chrono        = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+# webatui 0.1.1 actually depends on ratatui ^0.25 — must match exactly
+ratatui       = { version = "0.25", default-features = false, features = ["all-widgets"] }
+webatui       = "0.1.1"
+yew           = { version = "0.21", features = ["csr"] }
+web-sys       = { version = "0.3", features = [
+    "Window",
+    "Storage",
+    "console",
+] }
+wasm-bindgen  = "0.2"
+gloo-utils    = "0.2"

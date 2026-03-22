@@ -349,6 +349,7 @@ pub enum ImportFocus {
 
 // ── Full App State ────────────────────────────────────────────────────────────
 
+#[derive(Clone, PartialEq)]
 pub struct App {
     // ── Data ─────────────────────────────────────────────────────────────────
     pub budget: Budget,

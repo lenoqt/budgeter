@@ -10,8 +10,8 @@ use ratatui::{
     },
 };
 
-use crate::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, OtherField, PersonalField, Popup, Tab};
-use crate::model::IncomeScenario;
+use budgeter_core::app::{App, EditMode, FamilyField, ImportFocus, IncomeField, OtherField, PersonalField, Popup, Tab};
+use budgeter_core::model::IncomeScenario;
 
 /// Truncate a string to at most `max_chars` Unicode scalar values, appending "…" if truncated.
 /// This is safe for strings containing multi-byte characters (e.g. Japanese).
@@ -345,7 +345,7 @@ fn is_col(app: &App, tab: Tab, col_idx: usize) -> bool {
 // ── Loans tab ────────────────────────────────────────────────────────────────
 
 fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::app::{LoanSection, DebtField};
+    use budgeter_core::app::{LoanSection, DebtField};
 
     let income_total = app.budget.effective_income_total(app.scenario);
     let loan_total   = app.budget.loan_total(app.scenario);
@@ -404,7 +404,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
 
     // ── Mortgage panel ────────────────────────────────────────────────────────
     {
-        use crate::app::MortgageField;
+        use budgeter_core::app::MortgageField;
         let m = &app.budget.loans.mortgage;
         let active = app.loan_section == LoanSection::Mortgage;
 
@@ -450,7 +450,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
             match row_def {
                 MRow::Input(field, label, val) => {
                     let is_sel = active && app.mortgage_field == *field;
-                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let editing = is_sel && app.edit_mode == budgeter_core::app::EditMode::Editing;
                     let display = if editing { app.edit_buf.clone() } else { val.clone() };
                     let is_toggle = matches!(field, MortgageField::Amortization);
                     let lbl_style = if is_sel {
@@ -509,7 +509,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
 
     // ── Car panel ─────────────────────────────────────────────────────────────
     {
-        use crate::app::CarField;
+        use budgeter_core::app::CarField;
         let c = &app.budget.loans.car;
         let active = app.loan_section == LoanSection::Car;
 
@@ -552,7 +552,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
             match row_def {
                 CRow::Input(field, label, val) => {
                     let is_sel = active && app.car_field == *field;
-                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let editing = is_sel && app.edit_mode == budgeter_core::app::EditMode::Editing;
                     let display = if editing { app.edit_buf.clone() } else { val.clone() };
                     let is_toggle = matches!(field, CarField::Amortization);
                     let lbl_style = if is_sel {
@@ -655,7 +655,7 @@ fn draw_loans(frame: &mut Frame, app: &App, area: Rect) {
 
                 let cells: Vec<Cell> = col_labels.iter().zip(vals.iter()).map(|(field, val)| {
                     let is_sel = is_row_sel && app.debt_field == *field;
-                    let editing = is_sel && app.edit_mode == crate::app::EditMode::Editing;
+                    let editing = is_sel && app.edit_mode == budgeter_core::app::EditMode::Editing;
                     let display = if editing { app.edit_buf.clone() } else { val.clone() };
                     let style = if editing {
                         Style::default().fg(C_EDIT_FG).bg(C_EDIT_BG).add_modifier(Modifier::BOLD)
@@ -1674,7 +1674,7 @@ fn draw_popup_member_picker(frame: &mut Frame, app: &App, area: Rect, _row: usiz
 // ── Popup: loan member picker ─────────────────────────────────────────────────
 
 fn draw_popup_loan_member_picker(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::app::LoanSection;
+    use budgeter_core::app::LoanSection;
 
     let popup_area = centered_rect(44, 16, area);
     frame.render_widget(Clear, popup_area);

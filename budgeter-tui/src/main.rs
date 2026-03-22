@@ -1,10 +1,15 @@
-//! Family Budget TUI — main entry point.
+//! Family Budget TUI — terminal entry point.
 //! Handles terminal setup/teardown, the render loop, and all keyboard input.
+//!
+//! ## Running modes
+//! - **Terminal (default):** `cargo run -p budgeter-tui`
+//!   Full interactive TUI with keyboard editing.
+//!
+//! - **Web viewer:** `cd budgeter-web && trunk serve`
+//!   Read-only browser dashboard.  The TUI automatically writes `budget.json`
+//!   next to `budget.parquet` on every save so the web viewer stays in sync.
 
-mod app;
 mod db;
-mod import;
-mod model;
 mod ui;
 
 use std::io;
@@ -18,11 +23,14 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, EditMode, ImportFocus, Popup, Tab};
+use budgeter_core::app::{App, EditMode, ImportFocus, Popup, Tab};
+use budgeter_core::import;
+use budgeter_core::model::{Budget, SpendingLog};
 use db::Db;
-use model::Budget;
 
 const DB_PATH: &str = "budget.parquet";
+/// JSON export written next to the parquet file; loaded by the web viewer.
+const JSON_EXPORT_PATH: &str = "budget.json";
 const TICK_MS: u64 = 50; // ~20 fps
 
 fn main() -> Result<()> {
@@ -208,7 +216,7 @@ fn handle_normal(
                 KeyCode::Char('e') if app.spending_drill => {
                     if !app.spending_drilled_transactions().is_empty() {
                         app.import_cat_cursor = 0;
-                        app.popup = Popup::CategoryPicker { row: usize::MAX }; // sentinel for spending reassign
+                        app.popup = Popup::CategoryPicker { row: usize::MAX };
                     }
                     return Ok(false);
                 }
@@ -223,7 +231,7 @@ fn handle_normal(
             }
         }
         Tab::Loans => {
-            use crate::app::LoanSection;
+            use budgeter_core::app::LoanSection;
             match code {
                 // Esc — exit Debts subsection back to Mortgage
                 KeyCode::Esc => {
@@ -235,7 +243,7 @@ fn handle_normal(
                 // ← at leftmost Debts column → switch to Car panel
                 KeyCode::Left | KeyCode::Char('h') => {
                     if app.loan_section == LoanSection::Debts {
-                        use crate::app::DebtField;
+                        use budgeter_core::app::DebtField;
                         let i = DebtField::ALL.iter()
                             .position(|f| *f == app.debt_field)
                             .unwrap_or(0);
@@ -248,7 +256,7 @@ fn handle_normal(
                 // → at rightmost Debts column → wrap back to Mortgage panel
                 KeyCode::Right | KeyCode::Char('l') => {
                     if app.loan_section == LoanSection::Debts {
-                        use crate::app::DebtField;
+                        use budgeter_core::app::DebtField;
                         let i = DebtField::ALL.iter()
                             .position(|f| *f == app.debt_field)
                             .unwrap_or(0);
@@ -333,36 +341,32 @@ fn handle_normal(
     Ok(false)
 }
 
-// ── Loan member-picker popup input ───────────────────────────────────────────
+// ── Loan member-picker popup input ────────────────────────────────────────────
 
 fn handle_loan_member_picker(app: &mut App, code: KeyCode) -> Result<bool> {
     match code {
         KeyCode::Esc => {
             app.popup = Popup::None;
         }
-
         KeyCode::Up | KeyCode::Char('k') => {
             if app.loan_share_picker_cursor > 0 {
                 app.loan_share_picker_cursor -= 1;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            // Only 2 members (0 and 1)
             if app.loan_share_picker_cursor < 1 {
                 app.loan_share_picker_cursor += 1;
             }
         }
-
         KeyCode::Enter => {
             app.confirm_loan_share_member();
         }
-
         _ => {}
     }
     Ok(false)
 }
 
-// ── Import member-picker popup input ─────────────────────────────────────────
+// ── Transaction member-picker popup input ─────────────────────────────────────
 
 fn handle_tx_member_picker(
     app: &mut App,
@@ -401,8 +405,10 @@ fn handle_tx_member_picker(
     Ok(false)
 }
 
+// ── Import member-picker popup input ─────────────────────────────────────────
+
 fn handle_import_member_picker(app: &mut App, code: KeyCode) -> Result<bool> {
-    let count = 1 + app.budget.income.members.len(); // "Both/Shared" + members
+    let count = 1 + app.budget.income.members.len(); // "Both/Shared" + named members
     match code {
         KeyCode::Esc => {
             app.popup = Popup::None;
@@ -465,7 +471,6 @@ fn handle_category_picker(
         KeyCode::Esc => {
             app.popup = Popup::None;
         }
-
         KeyCode::Down | KeyCode::Char('j') => {
             if n > 0 {
                 app.import_cat_cursor = (app.import_cat_cursor + 1).min(n - 1);
@@ -476,7 +481,6 @@ fn handle_category_picker(
                 app.import_cat_cursor -= 1;
             }
         }
-
         KeyCode::Enter => {
             if let Some((cat_name, _)) = cats.get(app.import_cat_cursor) {
                 let cat = cat_name.clone();
@@ -492,12 +496,10 @@ fn handle_category_picker(
                     }
                 } else {
                     app.import_assign_category_for_row(row, cat);
-                    // After assigning, focus the list so user can pick next row
                     app.import_focus = ImportFocus::TransactionList;
                 }
             }
         }
-
         _ => {}
     }
     Ok(false)
@@ -511,7 +513,6 @@ fn handle_month_picker(app: &mut App, db: &Db, code: KeyCode) -> Result<bool> {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.popup = Popup::None;
         }
-
         KeyCode::Down | KeyCode::Char('j') => {
             if n > 0 {
                 app.popup_row = (app.popup_row + 1).min(n - 1);
@@ -522,7 +523,6 @@ fn handle_month_picker(app: &mut App, db: &Db, code: KeyCode) -> Result<bool> {
                 app.popup_row -= 1;
             }
         }
-
         KeyCode::Enter => {
             if let Some(month) = app.all_months.get(app.popup_row).cloned() {
                 if app.dirty {
@@ -537,13 +537,11 @@ fn handle_month_picker(app: &mut App, db: &Db, code: KeyCode) -> Result<bool> {
             }
             app.popup = Popup::None;
         }
-
         KeyCode::Delete | KeyCode::Char('d') => {
             if !app.all_months.is_empty() {
                 app.popup = Popup::DeleteConfirm;
             }
         }
-
         _ => {}
     }
     Ok(false)
@@ -571,11 +569,10 @@ fn handle_new_month(app: &mut App, db: &Db, code: KeyCode) -> Result<bool> {
                 if app.dirty {
                     do_save(app, db)?;
                 }
-                // Create new budget copying current values but with the new month.
-                // Clear spending log for the new month — transactions are per-month.
+                // Copy current budget to new month, clear spending log.
                 let mut new_budget = app.budget.clone();
                 new_budget.month = month.clone();
-                new_budget.spending = model::SpendingLog::default();
+                new_budget.spending = SpendingLog::default();
                 db.save(&new_budget)?;
 
                 app.all_months = db.list_months()?;
@@ -632,7 +629,7 @@ fn handle_delete_confirm(app: &mut App, db: &Db, code: KeyCode) -> Result<bool> 
     Ok(false)
 }
 
-// ── Import action ─────────────────────────────────────────────────────────────
+// ── Import CSV parse action ───────────────────────────────────────────────────
 
 fn do_import_parse(app: &mut App) {
     let path = app.import_path_buf.trim().to_string();
@@ -647,7 +644,9 @@ fn do_import_parse(app: &mut App) {
             app.import_preview = txs;
             app.import_selected = 0;
             app.import_focus = ImportFocus::TransactionList;
-            app.set_status(format!("Parsed {count} transactions — assign categories then press C to commit."));
+            app.set_status(format!(
+                "Parsed {count} transactions — assign categories then press C to commit."
+            ));
         }
         Err(e) => {
             app.set_status(format!("Parse error: {e}"));
@@ -655,18 +654,37 @@ fn do_import_parse(app: &mut App) {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Persistence helpers ───────────────────────────────────────────────────────
 
 fn do_save(app: &mut App, db: &Db) -> Result<()> {
     db.save(&app.budget)?;
     app.all_months = db.list_months()?;
     app.dirty = false;
-    app.set_status(format!("Saved {}  ✓", app.current_month));
+    // Also export a JSON file for the web viewer.
+    if let Err(e) = export_json(db) {
+        // Non-fatal — TUI still works without the export.
+        app.set_status(format!("Saved {} ✓  (JSON export failed: {})", app.current_month, e));
+    } else {
+        app.set_status(format!("Saved {}  ✓", app.current_month));
+    }
     Ok(())
 }
 
+/// Write all months to `budget.json` so the web viewer can load them from
+/// `localStorage` or directly as a static asset.
+fn export_json(db: &Db) -> Result<()> {
+    let all = db.load_all()?;
+    let json = serde_json::to_string_pretty(&all)?;
+    std::fs::write(JSON_EXPORT_PATH, json)?;
+    Ok(())
+}
+
+// ── Validation helpers ────────────────────────────────────────────────────────
+
 fn validate_month(s: &str) -> bool {
-    if s.len() != 7 { return false; }
+    if s.len() != 7 {
+        return false;
+    }
     let bytes = s.as_bytes();
     bytes[0..4].iter().all(|b| b.is_ascii_digit())
         && bytes[4] == b'-'
@@ -682,7 +700,7 @@ fn next_month_str(current: &str) -> String {
     if current.len() != 7 {
         return chrono::Local::now().format("%Y-%m").to_string();
     }
-    let year: i32  = current[0..4].parse().unwrap_or(2025);
+    let year: i32 = current[0..4].parse().unwrap_or(2025);
     let month: u32 = current[5..7].parse().unwrap_or(1);
     if month == 12 {
         format!("{:04}-01", year + 1)

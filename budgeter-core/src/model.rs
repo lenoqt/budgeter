@@ -8,7 +8,7 @@ fn default_half() -> f64 { 0.5 }
 // ── Transactions / Spending ───────────────────────────────────────────────────
 
 /// A single imported credit card transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transaction {
     /// ISO date string "YYYY-MM-DD"
     pub date: String,
@@ -40,7 +40,7 @@ impl Transaction {
 }
 
 /// One budget category linked to spending tracking.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpendingCategory {
     pub name: String,
     /// Budgeted amount copied from the budget plan for this month.
@@ -54,7 +54,7 @@ impl SpendingCategory {
 }
 
 /// All imported transactions + category caps for a given month.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SpendingLog {
     pub transactions: Vec<Transaction>,
     /// Category budget caps (built from the budget plan on import).
@@ -117,7 +117,7 @@ impl CardProvider {
 
 // ── Income ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncomeMember {
     pub name: String,
     pub income_after_tax: i64,
@@ -136,7 +136,7 @@ impl IncomeMember {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Income {
     pub members: Vec<IncomeMember>,
 }
@@ -220,7 +220,7 @@ impl Default for AmortizationMethod {
 /// (common Japanese dealer convention). When a dealer uses ¥100 rounding
 /// they collect the shortfall as a bump on the very first payment, stored
 /// in `first_payment`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AmortResult {
     pub monthly_principal: i64,
     pub monthly_interest:  i64,
@@ -326,7 +326,7 @@ pub fn amort_calc(
 /// Mortgage / housing loan details.
 /// `monthly_principal`, `monthly_interest`, and `monthly_payment` are
 /// **derived** — they are recomputed automatically whenever any input changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mortgage {
     /// Outstanding principal balance (残高) — input
     pub principal: i64,
@@ -398,7 +398,7 @@ impl Default for Mortgage {
 
 /// Car loan details.
 /// Same auto-calculation approach as Mortgage, without insurance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CarLoan {
     /// Outstanding principal balance (残高) — input
     pub principal: i64,
@@ -461,7 +461,7 @@ impl Default for CarLoan {
 }
 
 /// A single general debt / credit line.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Debt {
     pub label: String,
     pub principal: i64,
@@ -487,7 +487,7 @@ impl Debt {
 }
 
 /// Top-level loans container.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Loans {
     pub mortgage: Mortgage,
     pub car: CarLoan,
@@ -537,7 +537,7 @@ impl Default for Loans {
 
 // ── Personal Expenses ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersonalExpenseItem {
     pub label: String,
     pub amount_a: i64,
@@ -548,7 +548,7 @@ impl PersonalExpenseItem {
     pub fn total(&self) -> i64 { self.amount_a + self.amount_b }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersonalExpenses {
     pub items: Vec<PersonalExpenseItem>,
 }
@@ -561,7 +561,7 @@ impl PersonalExpenses {
 
 
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FamilyExpenseItem {
     pub label: String,
     pub total: i64,
@@ -576,7 +576,7 @@ impl FamilyExpenseItem {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FamilyExpenses {
     pub items: Vec<FamilyExpenseItem>,
 }
@@ -589,7 +589,7 @@ impl FamilyExpenses {
 
 // ── Other / Annual items ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OtherItem {
     pub label: String,
     pub annual_amount: i64,
@@ -600,7 +600,7 @@ impl OtherItem {
     pub fn monthly_equivalent(&self) -> i64 { self.annual_amount / 12 }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OtherItems {
     pub items: Vec<OtherItem>,
 }
@@ -612,7 +612,7 @@ impl OtherItems {
 
 // ── Full Budget ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
     pub month: String,
     pub income: Income,
@@ -702,7 +702,7 @@ impl Budget {
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
     pub income_total: i64,
     pub income_a: i64,
